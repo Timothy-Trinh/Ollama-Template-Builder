@@ -34,14 +34,18 @@ You may call one or more functions to assist with the user query.
 You are provided with function signatures within <tools></tools> XML tags:
 <tools>
 {{- range .Tools }}
-{"type": "function", "function": {{ .Function }}}
+<tool><name>{{ .Function.Name }}</name>
+<description>{{ .Function.Description }}</description>
+<parameters>{{ .Function }}</parameters>
+</tool>
 {{- end }}
 </tools>
 
-For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags, exactly as shown:
 <tool_call>
 {"name": <function-name>, "arguments": <args-json-object>}
 </tool_call>
+Do NOT use XML parameter format like <function=name><parameter=key>value</parameter></function>.
 {{- end }}<|im_end|>
 {{ end }}
 {{- range $i, $_ := .Messages }}
@@ -53,10 +57,11 @@ For each function call, return a json object with function name and arguments wi
 <think>
 {{ .Thinking }}
 </think>
-{{ else }}
+{{ else if $thinking }}
 <think></think>{{ end }}
 {{- if .Content }}{{ .Content }}
-{{- else if .ToolCalls }}<tool_call>
+{{- end }}
+{{- if .ToolCalls }}<tool_call>
 {{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
 {{ end }}</tool_call>
 {{- end }}{{ if not $last }}<|im_end|>
@@ -82,7 +87,9 @@ For each function call, return a json object with function name and arguments wi
 {{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}
 """
 
-# Recommended sampling parameters from NVIDIA for reasoning mode
+# Recommended sampling parameters from NVIDIA
+# Reasoning/thinking mode: temperature=1.0, top_p=1.0 (current defaults)
+# Tool-calling workloads: lower to temperature=0.6, top_p=0.95
 PARAMETER temperature 1.0
 PARAMETER top_p 1.0
 

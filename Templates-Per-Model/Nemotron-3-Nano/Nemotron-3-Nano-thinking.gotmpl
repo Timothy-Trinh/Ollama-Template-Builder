@@ -34,14 +34,18 @@ You may call one or more functions to assist with the user query.
 You are provided with function signatures within <tools></tools> XML tags:
 <tools>
 {{- range .Tools }}
-{"type": "function", "function": {{ .Function }}}
+<tool><name>{{ .Function.Name }}</name>
+<description>{{ .Function.Description }}</description>
+<parameters>{{ .Function }}</parameters>
+</tool>
 {{- end }}
 </tools>
 
-For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags, exactly as shown:
 <tool_call>
 {"name": <function-name>, "arguments": <args-json-object>}
 </tool_call>
+Do NOT use XML parameter format like <function=name><parameter=key>value</parameter></function>.
 {{- end }}<|im_end|>
 {{ end }}
 
@@ -53,18 +57,19 @@ For each function call, return a json object with function name and arguments wi
 {{- if eq .Role "user" }}<|im_start|>user
 {{ .Content }}<|im_end|>
 {{ else if eq .Role "assistant" }}<|im_start|>assistant
-{{- /* Thinking block: always emit <think> tags for Nemotron.       */}}
+{{- /* Thinking block: emit <think> tags only when thinking is ON.  */}}
 {{- /* Full thinking shown for messages at or after last user msg.  */}}
 {{- /* Truncated to <think></think> for older turns.                */}}
 {{- if and .Thinking (ge $i $lastUserIdx) }}
 <think>
 {{ .Thinking }}
 </think>
-{{ else }}
+{{ else if $thinking }}
 <think></think>{{ end }}
-{{- /* Content or tool calls */}}
+{{- /* Content and tool calls — rendered independently             */}}
 {{- if .Content }}{{ .Content }}
-{{- else if .ToolCalls }}<tool_call>
+{{- end }}
+{{- if .ToolCalls }}<tool_call>
 {{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
 {{ end }}</tool_call>
 {{- end }}{{ if not $last }}<|im_end|>

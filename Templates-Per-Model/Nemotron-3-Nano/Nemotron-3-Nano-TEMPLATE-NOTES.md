@@ -61,6 +61,37 @@
 
 **Potential limitation:** Since the model was fine-tuned on XML-format tool calls, it *may* occasionally produce XML instead of JSON, especially with ambiguous prompts. The system instruction and history should guide it toward JSON in most cases.
 
+### Ollama Parser Architecture — Two Paths, Two Format Requirements
+
+> **This section documents a critical architectural distinction discovered February 2026. It determines which tool call output format the template must produce.**
+
+**As of January 17, 2026 (PR #13764, merged into main)**, Ollama maintains two separate and incompatible parsing pipelines for Nemotron-3-Nano:
+
+| Pipeline | Location | Activation | Expected Output Format |
+|---|---|---|---|
+| **Architecture-based** | `model/parsers/Nemotron3NanoParser` → `Qwen3CoderParser` | Official library model (`ollama pull nemotron-3-nano`) | Native XML: `<function=name>\n<parameter=key>value\n</parameter>\n</function>` |
+| **Template-based** | `tools/tools.go` → `tools.NewParser()` | Custom Modelfile (our case) | JSON: `{"name": ..., "arguments": {...}}` inside `<tool_call>` tags |
+
+**Why they differ:**
+
+PR #13764 refactored `Nemotron3NanoParser` to delegate tool call parsing to `Qwen3CoderParser`. That parser collects raw content between `<tool_call>` and `</tool_call>` tags, then passes it through `transformToXML()` — a function that normalizes Nemotron's shorthand XML (`<function=name>`) into proper XML and unmarshals it. This means **the architecture-based parser natively handles the model's trained output format**.
+
+The template-based parser (`tools/tools.go`) has no XML support. Its `findArguments()` function scans for a JSON `{...}` object after the tool name substring. No JSON object = no parsed tool call.
+
+**What this means in practice:**
+
+- **For our custom Modelfile**: The template-based parser is almost certainly active. The Go template's `.ToolCalls` branch defines the prefix tag, and `findArguments()` then requires JSON. **JSON output format is required.**
+- **For the official library model**: The architecture-based parser handles XML natively. Switching to native XML *could* work there, but cannot be assumed to work for a custom Modelfile.
+- **These two format expectations are mutually exclusive.** There is no output string that satisfies both parsers.
+
+**Verification test**: After creating a new Modelfile version, call it with a tool request and inspect the raw API response. If `tool_calls` is populated → template-based parser is running correctly on JSON output. If `tool_calls` is null but the XML appears in `content` → the architecture-based parser is running and expects XML.
+
+**References:**
+- [PR #13764 — Nemotron parser refactor to Qwen3Coder](https://github.com/ollama/ollama/pull/13764) (merged Jan 17, 2026)
+- [tools/tools.go — `findArguments()` function](https://github.com/ollama/ollama/blob/main/tools/tools.go)
+- [model/parsers/qwen3coder.go — `transformToXML()` and `parseToolCall()`](https://raw.githubusercontent.com/ollama/ollama/main/model/parsers/qwen3coder.go)
+- [Issue #8287 — Empirical validation: hybrid format achieves 100/100 tool call compliance](https://github.com/ollama/ollama/issues/8287)
+
 ### Tool Response Per-Message Wrapping
 
 - Each tool response gets its own `<|im_start|>user\n<tool_response>...\n</tool_response><|im_end|>` turn.
@@ -93,6 +124,15 @@ The Modelfile uses reasoning defaults (temperature=1.0, top_p=1.0). Adjust for t
 
 ## Changelog
 
+**2026-02-23 — Path A Remediation (Tool Call Reliability)**
+- Investigated tool call parsing failures causing the "I've completed processing but have no response to give." error in nanobot.
+- Researched Ollama parser architecture (PR #13764, #11030, #10415); documented two-parser system in §*Ollama Parser Architecture*.
+- Changed tool definitions from JSON to hybrid XML format (`<tool>`, `<name>`, `<description>`, `<parameters>`) to align with NVIDIA’s canonical training format.
+- Strengthened output instructions with explicit negative example prohibiting XML parameter format.
+- Fixed `else if .ToolCalls` → independent `if` conditions in assistant history rendering (content and tool calls now both render when present).
+- Added `$thinking` guard: empty `<think></think>` tags no longer injected on history turns when thinking is disabled.
+- Added sampling parameter guidance comment to Modelfile.
+
 **2025-07-19 — Initial Creation**
 - Created Go template for Nemotron 3 Nano with thinking ON by default.
 - Implemented multi-turn thinking truncation via two-pass approach.
@@ -102,7 +142,7 @@ The Modelfile uses reasoning defaults (temperature=1.0, top_p=1.0). Adjust for t
 
 ## Known Limitations
 
-1. **Tool call format mismatch**: The model was trained on XML-format tool calls but the template instructs JSON format. This is a deliberate choice for Ollama compatibility.
+1. **Tool call format — hybrid approach**: The model was trained on XML-format tool calls. The template uses XML for tool *definitions* (activates training-time recognition) and JSON for tool call *output* (required by Ollama’s template-based parser). Negative prompting is included to suppress output reversion to XML. See §*Ollama Parser Architecture* for the two-parser background.
 2. **Variable reassignment**: Requires Ollama built with Go 1.23+ (standard in recent Ollama releases).
 3. **Tool response grouping**: Consecutive tool responses are wrapped individually rather than grouped, which slightly differs from the canonical Jinja template.
 4. **No `continue` keyword**: System messages in the message loop are ignored by not matching any role condition, rather than using `continue` (which requires Go 1.23+). This works correctly.
