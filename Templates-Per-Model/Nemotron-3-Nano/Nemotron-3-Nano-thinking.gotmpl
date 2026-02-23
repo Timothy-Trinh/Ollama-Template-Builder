@@ -1,0 +1,96 @@
+{{- if .Messages }}
+{{- /* ============================================================ */}}
+{{- /* NVIDIA Nemotron 3 Nano (30B-A3B) — Ollama Go Template        */}}
+{{- /* ChatML format with thinking (default ON) and tool calling    */}}
+{{- /* ============================================================ */}}
+
+{{- /* Determine thinking state: default ON for Nemotron 3 Nano     */}}
+{{- /* .IsThinkSet=false means user did not set it → default to ON  */}}
+{{- /* .IsThinkSet=true, .Think=true → ON                          */}}
+{{- /* .IsThinkSet=true, .Think=false → OFF                        */}}
+{{- $thinking := true }}
+{{- if and $.IsThinkSet (not $.Think) }}{{- $thinking = false }}{{- end }}
+
+{{- /* First pass: find index of last user message.                 */}}
+{{- /* Used for multi-turn thinking truncation — reasoning from     */}}
+{{- /* turns before the last user message is replaced with empty    */}}
+{{- /* <think></think> to save context and reduce distraction.      */}}
+{{- $lastUserIdx := 0 }}
+{{- range $i, $_ := .Messages }}
+{{-   if eq .Role "user" }}{{- $lastUserIdx = $i }}{{- end }}
+{{- end }}
+
+{{- /* ---- System message with optional tool definitions ---- */}}
+{{- if or .System .Tools }}<|im_start|>system
+{{- if .System }}
+{{ .System }}
+{{- end }}
+{{- if .Tools }}
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{{- range .Tools }}
+{"type": "function", "function": {{ .Function }}}
+{{- end }}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+{{- end }}<|im_end|>
+{{ end }}
+
+{{- /* ---- Message rendering loop ---- */}}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+
+{{- /* User messages */}}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{- /* Thinking block: always emit <think> tags for Nemotron.       */}}
+{{- /* Full thinking shown for messages at or after last user msg.  */}}
+{{- /* Truncated to <think></think> for older turns.                */}}
+{{- if and .Thinking (ge $i $lastUserIdx) }}
+<think>
+{{ .Thinking }}
+</think>
+{{ else }}
+<think></think>{{ end }}
+{{- /* Content or tool calls */}}
+{{- if .Content }}{{ .Content }}
+{{- else if .ToolCalls }}<tool_call>
+{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{ end }}</tool_call>
+{{- end }}{{ if not $last }}<|im_end|>
+{{ end }}
+
+{{- /* Tool response messages — wrapped as user turn per ChatML */}}
+{{- else if eq .Role "tool" }}<|im_start|>user
+<tool_response>
+{{ .Content }}
+</tool_response><|im_end|>
+{{ end }}
+
+{{- /* Generation prompt: emitted after the last non-assistant msg */}}
+{{- if and (ne .Role "assistant") $last }}
+{{- if $thinking }}<|im_start|>assistant
+<think>
+{{ else }}<|im_start|>assistant
+<think></think>{{ end }}
+{{- end }}
+{{- end }}
+
+{{- /* ---- Legacy path for /api/generate ---- */}}
+{{- else }}
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}
